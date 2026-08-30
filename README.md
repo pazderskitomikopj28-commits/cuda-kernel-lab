@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | 行归约 | shared-memory baseline vs warp shuffle | 线程映射、SIMT、warp 内归约和同步边界 |
 | 条件变换 | warp-uniform vs alternating divergence vs branchless | 分支发散、数据布局与 predication 取舍 |
+| Strided gather | aligned/misaligned、stride 1/2/4/8/32 | 合并访问、事务利用率和有效带宽 |
 | 矩阵转置 | naive vs 32×32 tiled vs `+1` padded tile | 合并访问、shared memory、bank conflict 和 `__syncthreads()` |
 | 矩阵乘 | host FP32 reference vs WMMA | Tensor Core、fragment 形状限制和数值正确性 |
 | 性能诊断 | CUDA event、Nsight 与 Compute Sanitizer | 重复测量、瓶颈定位和内存/竞争错误检查 |
@@ -28,6 +29,8 @@ WGMMA 与 WMMA 不是可互换接口。Hopper warpgroup 异步矩阵指令的实
   -Op transpose -Rows 4097 -Cols 3073
 .\scripts\run_bench.ps1 -BuildDir D:\DevTools\Builds\cuda-kernel-lab-rtx4060 `
   -Op divergence -Rows 1024 -Cols 4096 -Work 64
+.\scripts\run_bench.ps1 -BuildDir D:\DevTools\Builds\cuda-kernel-lab-rtx4060 `
+  -Op coalescing -Rows 2048 -Cols 4096 -Iters 50
 .\scripts\run_bench.ps1 -BuildDir D:\DevTools\Builds\cuda-kernel-lab-rtx4060 `
   -Op wmma -Rows 256 -Cols 256 -K 256
 ```

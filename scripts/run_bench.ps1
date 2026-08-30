@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('reduce', 'transpose', 'divergence', 'wmma')]
+  [ValidateSet('reduce', 'transpose', 'divergence', 'coalescing', 'wmma')]
   [string]$Op = 'reduce',
   [int]$Rows = 4096,
   [int]$Cols = 4096,

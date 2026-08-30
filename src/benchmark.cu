@@ -3,11 +3,13 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -139,6 +141,56 @@ float validate_transform(const std::vector<float>& input,
         transform_reference(input[index], selectors[index] != 0, work);
     max_abs_error =
         std::max(max_abs_error, std::abs(reference - output[index]));
+  }
+  return max_abs_error;
+}
+
+__host__ __device__ float indexed_value(std::size_t index) {
+  return static_cast<float>(static_cast<int>(index % 251) - 125) / 128.0f;
+}
+
+__global__ void initialize_indexed_kernel(float* values, std::size_t count) {
+  const std::size_t index =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index < count) {
+    values[index] = indexed_value(index);
+  }
+}
+
+cudaError_t measure_gather(const float* input, float* output,
+                           std::size_t count, std::size_t stride,
+                           int iterations, cudaEvent_t start,
+                           cudaEvent_t stop, float* result_ms) {
+  cudaError_t status =
+      kernel_lab::gather_strided(input, output, count, stride, nullptr);
+  if (status != cudaSuccess) return status;
+  status = cudaDeviceSynchronize();
+  if (status != cudaSuccess) return status;
+  status = cudaEventRecord(start);
+  if (status != cudaSuccess) return status;
+  for (int iteration = 0; iteration < iterations; ++iteration) {
+    status =
+        kernel_lab::gather_strided(input, output, count, stride, nullptr);
+    if (status != cudaSuccess) return status;
+  }
+  status = cudaEventRecord(stop);
+  if (status != cudaSuccess) return status;
+  status = cudaEventSynchronize(stop);
+  if (status != cudaSuccess) return status;
+  return elapsed_ms(start, stop, iterations, result_ms);
+}
+
+float validate_gather(const std::vector<float>& output, std::size_t count,
+                      std::size_t stride, std::size_t offset,
+                      std::size_t checks) {
+  float max_abs_error = 0.0f;
+  checks = std::min(checks, count);
+  for (std::size_t sample = 0; sample < checks; ++sample) {
+    const std::size_t index =
+        checks == 1 ? 0 : sample * (count - 1) / (checks - 1);
+    const float expected = indexed_value(offset + index * stride);
+    max_abs_error =
+        std::max(max_abs_error, std::abs(expected - output[index]));
   }
   return max_abs_error;
 }
@@ -393,6 +445,96 @@ int benchmark_divergence(const Options& options) {
   return max_abs_error < 1e-5f ? 0 : 2;
 }
 
+int benchmark_coalescing(const Options& options) {
+  constexpr std::size_t max_stride = 32;
+  const std::size_t count =
+      static_cast<std::size_t>(options.rows) * options.cols;
+  if (count > (std::numeric_limits<std::size_t>::max() - 1) / max_stride) {
+    std::cerr << "coalescing input size overflows size_t\n";
+    return 2;
+  }
+  const std::size_t input_count = count * max_stride + 1;
+
+  float* device_input = nullptr;
+  float* device_output = nullptr;
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_input),
+                        input_count * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_output),
+                        count * sizeof(float)));
+
+  constexpr unsigned int threads = 256;
+  const std::size_t initialization_blocks =
+      (input_count + threads - 1) / threads;
+  if (initialization_blocks > std::numeric_limits<unsigned int>::max()) {
+    std::cerr << "coalescing initialization grid is too large\n";
+    return 2;
+  }
+  initialize_indexed_kernel<<<static_cast<unsigned int>(initialization_blocks),
+                              threads>>>(device_input, input_count);
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  struct Variant {
+    const char* name;
+    std::size_t stride;
+    std::size_t offset;
+  };
+  constexpr std::array<Variant, 6> variants{{
+      {"aligned", 1, 0},
+      {"misaligned", 1, 1},
+      {"stride2", 2, 0},
+      {"stride4", 4, 0},
+      {"stride8", 8, 0},
+      {"stride32", 32, 0},
+  }};
+  struct Result {
+    float ms = 0.0f;
+    double effective_gbps = 0.0;
+  };
+  std::array<Result, variants.size()> results{};
+  std::vector<float> host_output(count);
+  const std::size_t checked_elements = std::min<std::size_t>(count, 8192);
+  float max_abs_error = 0.0f;
+
+  cudaEvent_t start = nullptr;
+  cudaEvent_t stop = nullptr;
+  CUDA_CHECK(cudaEventCreate(&start));
+  CUDA_CHECK(cudaEventCreate(&stop));
+  for (std::size_t variant_index = 0; variant_index < variants.size();
+       ++variant_index) {
+    const Variant variant = variants[variant_index];
+    CUDA_CHECK(measure_gather(
+        device_input + variant.offset, device_output, count, variant.stride,
+        options.iterations, start, stop, &results[variant_index].ms));
+    const double useful_bytes =
+        2.0 * static_cast<double>(count) * sizeof(float);
+    results[variant_index].effective_gbps =
+        useful_bytes / (static_cast<double>(results[variant_index].ms) * 1e6);
+    CUDA_CHECK(cudaMemcpy(host_output.data(), device_output,
+                          count * sizeof(float), cudaMemcpyDeviceToHost));
+    max_abs_error = std::max(
+        max_abs_error,
+        validate_gather(host_output, count, variant.stride, variant.offset,
+                        checked_elements));
+  }
+
+  std::cout << std::fixed << std::setprecision(4)
+            << "op=coalescing elements=" << count;
+  for (std::size_t index = 0; index < variants.size(); ++index) {
+    std::cout << ' ' << variants[index].name << "_ms=" << results[index].ms
+              << ' ' << variants[index].name
+              << "_GBps=" << results[index].effective_gbps;
+  }
+  std::cout << " checked_elements=" << checked_elements
+            << " max_abs_error=" << max_abs_error << '\n';
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  cudaFree(device_input);
+  cudaFree(device_output);
+  return max_abs_error < 1e-6f ? 0 : 2;
+}
+
 int benchmark_wmma(const Options& options) {
   const int m = options.rows;
   const int n = options.cols;
@@ -480,9 +622,10 @@ int main(int argc, char** argv) {
     if (options.op == "reduce") return benchmark_reduce(options);
     if (options.op == "transpose") return benchmark_transpose(options);
     if (options.op == "divergence") return benchmark_divergence(options);
+    if (options.op == "coalescing") return benchmark_coalescing(options);
     if (options.op == "wmma") return benchmark_wmma(options);
     std::cerr << "unknown --op: " << options.op
-              << " (use reduce, transpose, divergence or wmma)\n";
+              << " (use reduce, transpose, divergence, coalescing or wmma)\n";
     return 2;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

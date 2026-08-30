@@ -31,6 +31,7 @@ bool expect_close(float actual, float expected, float tolerance,
 }
 
 bool test_invalid_arguments() {
+  float dummy = 0.0f;
   if (kernel_lab::reduce_mean_warp(nullptr, nullptr, 1, 1) !=
           cudaErrorInvalidValue ||
       kernel_lab::transpose_tiled(nullptr, nullptr, 1, 1) !=
@@ -39,6 +40,10 @@ bool test_invalid_arguments() {
           cudaErrorInvalidValue ||
       kernel_lab::select_transform_branchless(nullptr, nullptr, nullptr, 0,
                                               1) != cudaErrorInvalidValue ||
+      kernel_lab::gather_strided(nullptr, nullptr, 1, 1) !=
+          cudaErrorInvalidValue ||
+      kernel_lab::gather_strided(&dummy, &dummy, 1, 0) !=
+          cudaErrorInvalidValue ||
       kernel_lab::wmma_gemm(nullptr, nullptr, nullptr, 15, 16, 16) !=
           cudaErrorInvalidValue) {
     std::cerr << "invalid arguments were not rejected\n";
@@ -223,6 +228,55 @@ bool test_divergence_transforms() {
   return valid;
 }
 
+bool test_strided_gather() {
+  constexpr std::size_t count = 1003;
+  constexpr std::size_t max_stride = 7;
+  const std::size_t input_count = count * max_stride + 1;
+  std::vector<float> input(input_count);
+  for (std::size_t index = 0; index < input_count; ++index) {
+    input[index] = static_cast<float>(static_cast<int>(index % 257) - 128);
+  }
+
+  float* device_input = nullptr;
+  float* device_output = nullptr;
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_input),
+                        input_count * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_output),
+                        count * sizeof(float)));
+  CUDA_CHECK(cudaMemcpy(device_input, input.data(),
+                        input_count * sizeof(float), cudaMemcpyHostToDevice));
+
+  struct Variant {
+    const char* name;
+    std::size_t stride;
+    std::size_t offset;
+  };
+  const Variant variants[] = {
+      {"aligned", 1, 0}, {"misaligned", 1, 1},
+      {"stride2", 2, 0}, {"stride7", 7, 0}};
+  bool valid = true;
+  std::vector<float> output(count);
+  for (const Variant variant : variants) {
+    CUDA_CHECK(kernel_lab::gather_strided(
+        device_input + variant.offset, device_output, count, variant.stride));
+    CUDA_CHECK(cudaMemcpy(output.data(), device_output, count * sizeof(float),
+                          cudaMemcpyDeviceToHost));
+    for (std::size_t index = 0; index < count; ++index) {
+      const float expected = input[variant.offset + index * variant.stride];
+      if (output[index] != expected) {
+        std::cerr << variant.name << " gather mismatch at " << index << '\n';
+        valid = false;
+        break;
+      }
+    }
+    if (!valid) break;
+  }
+
+  cudaFree(device_input);
+  cudaFree(device_output);
+  return valid;
+}
+
 bool test_wmma() {
   int device = 0;
   CUDA_CHECK(cudaGetDevice(&device));
@@ -289,7 +343,8 @@ bool test_wmma() {
 
 int main() {
   if (!test_invalid_arguments() || !test_reduce_and_transpose() ||
-      !test_divergence_transforms() || !test_wmma()) {
+      !test_divergence_transforms() || !test_strided_gather() ||
+      !test_wmma()) {
     return 1;
   }
   std::cout << "kernel tests passed\n";

@@ -147,6 +147,16 @@ __global__ void select_transform_branchless_kernel(
   output[index] = selectors[index] != 0 ? path_a : path_b;
 }
 
+__global__ void gather_strided_kernel(const float* input, float* output,
+                                      std::size_t count,
+                                      std::size_t stride) {
+  const std::size_t index =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index < count) {
+    output[index] = input[index * stride];
+  }
+}
+
 __global__ void wmma_gemm_kernel(const half* a, const half* b, float* c,
                                  int m, int n, int k) {
   namespace wmma = nvcuda::wmma;
@@ -275,6 +285,23 @@ cudaError_t select_transform_branchless(const float* input,
   select_transform_branchless_kernel<<<static_cast<unsigned int>(blocks),
                                        threads, 0, stream>>>(
       input, selectors, output, count, work);
+  return cudaGetLastError();
+}
+
+cudaError_t gather_strided(const float* input, float* output,
+                           std::size_t count, std::size_t stride,
+                           cudaStream_t stream) {
+  if (input == nullptr || output == nullptr || count == 0 || stride == 0 ||
+      (count - 1) > std::numeric_limits<std::size_t>::max() / stride) {
+    return cudaErrorInvalidValue;
+  }
+  constexpr unsigned int threads = 256;
+  const std::size_t blocks = (count + threads - 1) / threads;
+  if (blocks > std::numeric_limits<unsigned int>::max()) {
+    return cudaErrorInvalidValue;
+  }
+  gather_strided_kernel<<<static_cast<unsigned int>(blocks), threads, 0,
+                          stream>>>(input, output, count, stride);
   return cudaGetLastError();
 }
 

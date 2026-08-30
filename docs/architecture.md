@@ -37,6 +37,28 @@ paths, while a branchless implementation deliberately performs extra work for
 every lane. The benchmark reports both timings and treats the result as a
 workload-dependent tradeoff.
 
+## Global-memory access pattern
+
+`gather_strided` assigns one output element to each thread. Output stores are
+always contiguous; the input index is `thread_index * stride`. The benchmark
+changes only input offset and stride:
+
+- aligned and four-byte-misaligned contiguous reads;
+- stride 2, 4, 8 and 32 reads with the same number of useful elements;
+- a common 256-thread launch shape and identical output traffic.
+
+The largest source buffer is initialized directly on the GPU. This avoids a
+multi-gigabyte host staging allocation when the experiment uses millions of
+outputs and stride 32. Correctness is checked against the deterministic index
+pattern on evenly distributed samples; the unit test separately validates all
+elements for odd counts and several strides.
+
+Reported effective bandwidth counts one four-byte input value and one four-byte
+output value per element. It is a useful-work rate, not a claim about physical
+DRAM bytes. Strided loads may fetch memory sectors containing many unused
+values, which is exactly the efficiency loss under study. Hardware transaction
+counters should be reported separately when Nsight Compute is available.
+
 ## Tiled transpose
 
 Both tiled kernels load a 32×32 tile into shared memory. The deliberately

@@ -48,6 +48,13 @@ cudaError_t select_transform_branchless(const float* input,
                                         int work,
                                         cudaStream_t stream = nullptr);
 
+// output[index] = input[index * stride]. Output stores remain contiguous;
+// changing stride isolates the input access pattern. Callers may offset input
+// before launch to study misalignment.
+cudaError_t gather_strided(const float* input, float* output,
+                           std::size_t count, std::size_t stride,
+                           cudaStream_t stream = nullptr);
+
 // C = A @ B, A: [M, K], B: [K, N], C: [M, N].
 // The WMMA sample intentionally requires M, N and K to be multiples of 16;
 // this makes boundary behavior explicit and keeps the fast path auditable.
