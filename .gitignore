@@ -1,0 +1,14 @@
+build/
+out/
+*.obj
+*.o
+*.exe
+*.dll
+*.so
+*.dylib
+*.ncu-rep
+*.nsys-rep
+*.csv
+.cache/
+.idea/
+.vscode/settings.json
