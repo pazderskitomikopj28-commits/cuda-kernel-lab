@@ -6,6 +6,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
+# CUDA's static runtime can pull LIBCMT into an /MD MSVC build and trigger
+# LNK4098. Use the DLL runtime on Windows unless the caller selected one.
+if(MSVC AND NOT CMAKE_CUDA_RUNTIME_LIBRARY)
+  set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
+endif()
+
 # Override with -DCMAKE_CUDA_ARCHITECTURES=80,90 for a specific machine.
 if(NOT CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES 70;80;90)
