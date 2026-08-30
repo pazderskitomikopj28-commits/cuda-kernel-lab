@@ -1,9 +1,10 @@
 param(
-  [ValidateSet('reduce', 'transpose', 'wmma')]
+  [ValidateSet('reduce', 'transpose', 'divergence', 'wmma')]
   [string]$Op = 'reduce',
   [int]$Rows = 4096,
   [int]$Cols = 4096,
   [int]$K = 256,
+  [int]$Work = 64,
   [int]$Iters = 100,
   [string]$BuildDir = 'build'
 )
@@ -17,4 +18,4 @@ if (-not (Test-Path $exe)) {
 if (-not (Test-Path $exe)) {
   throw "Cannot find kernel_bench.exe under $BuildDir. Configure and build with CMake first."
 }
-& $exe --op $Op --rows $Rows --cols $Cols --k $K --iters $Iters
+& $exe --op $Op --rows $Rows --cols $Cols --k $K --work $Work --iters $Iters

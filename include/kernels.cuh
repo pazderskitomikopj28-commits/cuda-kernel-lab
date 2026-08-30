@@ -3,6 +3,9 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
 
+#include <cstddef>
+#include <cstdint>
+
 namespace kernel_lab {
 
 // Each function launches work on the supplied stream and returns the launch
@@ -28,6 +31,22 @@ cudaError_t transpose_tiled_conflict(const float* input, float* output,
 cudaError_t transpose_tiled(const float* input, float* output,
                             int rows, int cols,
                             cudaStream_t stream = nullptr);
+
+// Applies one of two arithmetic paths according to selectors[index]. The
+// branch kernel executes only the selected path; the branchless kernel
+// computes both paths and selects the result. Selector layout therefore
+// controls warp divergence without changing global-memory access order.
+cudaError_t select_transform_branch(const float* input,
+                                    const std::uint8_t* selectors,
+                                    float* output, std::size_t count,
+                                    int work,
+                                    cudaStream_t stream = nullptr);
+
+cudaError_t select_transform_branchless(const float* input,
+                                        const std::uint8_t* selectors,
+                                        float* output, std::size_t count,
+                                        int work,
+                                        cudaStream_t stream = nullptr);
 
 // C = A @ B, A: [M, K], B: [K, N], C: [M, N].
 // The WMMA sample intentionally requires M, N and K to be multiples of 16;

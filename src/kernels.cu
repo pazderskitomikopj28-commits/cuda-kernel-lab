@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 
 namespace {
 
@@ -97,6 +99,54 @@ __global__ void transpose_tiled_kernel(const float* input, float* output,
   }
 }
 
+__device__ __noinline__ float transform_path_a(float value, int work) {
+#pragma unroll 1
+  for (int iteration = 0; iteration < work; ++iteration) {
+    value = fmaf(value, 1.0009765625f, 0.000244140625f);
+  }
+  return value;
+}
+
+__device__ __noinline__ float transform_path_b(float value, int work) {
+#pragma unroll 1
+  for (int iteration = 0; iteration < work; ++iteration) {
+    value = fmaf(value, 0.9990234375f, -0.000244140625f);
+  }
+  return value;
+}
+
+__global__ void select_transform_branch_kernel(
+    const float* input, const std::uint8_t* selectors, float* output,
+    std::size_t count, int work) {
+  const std::size_t index =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index >= count) {
+    return;
+  }
+
+  float value = input[index];
+  if (selectors[index] != 0) {
+    value = transform_path_a(value, work);
+  } else {
+    value = transform_path_b(value, work);
+  }
+  output[index] = value;
+}
+
+__global__ void select_transform_branchless_kernel(
+    const float* input, const std::uint8_t* selectors, float* output,
+    std::size_t count, int work) {
+  const std::size_t index =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index >= count) {
+    return;
+  }
+
+  const float path_a = transform_path_a(input[index], work);
+  const float path_b = transform_path_b(input[index], work);
+  output[index] = selectors[index] != 0 ? path_a : path_b;
+}
+
 __global__ void wmma_gemm_kernel(const half* a, const half* b, float* c,
                                  int m, int n, int k) {
   namespace wmma = nvcuda::wmma;
@@ -187,6 +237,44 @@ cudaError_t transpose_tiled_conflict(const float* input, float* output,
             (rows + kTileDim - 1) / kTileDim);
   transpose_tiled_kernel<0><<<grid, block, 0, stream>>>(input, output, rows,
                                                         cols);
+  return cudaGetLastError();
+}
+
+cudaError_t select_transform_branch(const float* input,
+                                    const std::uint8_t* selectors,
+                                    float* output, std::size_t count,
+                                    int work, cudaStream_t stream) {
+  if (input == nullptr || selectors == nullptr || output == nullptr ||
+      count == 0 || work <= 0) {
+    return cudaErrorInvalidValue;
+  }
+  constexpr unsigned int threads = 256;
+  const std::size_t blocks = (count + threads - 1) / threads;
+  if (blocks > std::numeric_limits<unsigned int>::max()) {
+    return cudaErrorInvalidValue;
+  }
+  select_transform_branch_kernel<<<static_cast<unsigned int>(blocks), threads,
+                                   0, stream>>>(input, selectors, output, count,
+                                               work);
+  return cudaGetLastError();
+}
+
+cudaError_t select_transform_branchless(const float* input,
+                                        const std::uint8_t* selectors,
+                                        float* output, std::size_t count,
+                                        int work, cudaStream_t stream) {
+  if (input == nullptr || selectors == nullptr || output == nullptr ||
+      count == 0 || work <= 0) {
+    return cudaErrorInvalidValue;
+  }
+  constexpr unsigned int threads = 256;
+  const std::size_t blocks = (count + threads - 1) / threads;
+  if (blocks > std::numeric_limits<unsigned int>::max()) {
+    return cudaErrorInvalidValue;
+  }
+  select_transform_branchless_kernel<<<static_cast<unsigned int>(blocks),
+                                       threads, 0, stream>>>(
+      input, selectors, output, count, work);
   return cudaGetLastError();
 }
 

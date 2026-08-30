@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -34,6 +35,10 @@ bool test_invalid_arguments() {
           cudaErrorInvalidValue ||
       kernel_lab::transpose_tiled(nullptr, nullptr, 1, 1) !=
           cudaErrorInvalidValue ||
+      kernel_lab::select_transform_branch(nullptr, nullptr, nullptr, 1, 1) !=
+          cudaErrorInvalidValue ||
+      kernel_lab::select_transform_branchless(nullptr, nullptr, nullptr, 0,
+                                              1) != cudaErrorInvalidValue ||
       kernel_lab::wmma_gemm(nullptr, nullptr, nullptr, 15, 16, 16) !=
           cudaErrorInvalidValue) {
     std::cerr << "invalid arguments were not rejected\n";
@@ -143,6 +148,81 @@ bool test_reduce_and_transpose() {
   return transpose_ok;
 }
 
+float transform_reference(float value, bool select_path_a, int work) {
+  const float multiplier =
+      select_path_a ? 1.0009765625f : 0.9990234375f;
+  const float addend =
+      select_path_a ? 0.000244140625f : -0.000244140625f;
+  for (int iteration = 0; iteration < work; ++iteration) {
+    value = std::fma(value, multiplier, addend);
+  }
+  return value;
+}
+
+bool test_divergence_transforms() {
+  constexpr std::size_t count = 1003;
+  constexpr int work = 7;
+  std::vector<float> input(count);
+  std::vector<std::uint8_t> selectors(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    input[index] = std::sin(static_cast<float>(index) * 0.03125f);
+    selectors[index] = static_cast<std::uint8_t>((index * 7) % 5 < 2);
+  }
+
+  float* device_input = nullptr;
+  float* device_output = nullptr;
+  std::uint8_t* device_selectors = nullptr;
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_input),
+                        count * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_output),
+                        count * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_selectors),
+                        count * sizeof(std::uint8_t)));
+  CUDA_CHECK(cudaMemcpy(device_input, input.data(), count * sizeof(float),
+                        cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(device_selectors, selectors.data(),
+                        count * sizeof(std::uint8_t), cudaMemcpyHostToDevice));
+
+  using Launch = cudaError_t (*)(const float*, const std::uint8_t*, float*,
+                                  std::size_t, int, cudaStream_t);
+  const auto check = [&](const char* name, Launch launch) {
+    const cudaError_t launch_status = launch(
+        device_input, device_selectors, device_output, count, work, nullptr);
+    if (launch_status != cudaSuccess) {
+      std::cerr << name << " launch failed: "
+                << cudaGetErrorString(launch_status) << '\n';
+      return false;
+    }
+    std::vector<float> output(count);
+    const cudaError_t copy_status =
+        cudaMemcpy(output.data(), device_output, count * sizeof(float),
+                   cudaMemcpyDeviceToHost);
+    if (copy_status != cudaSuccess) {
+      std::cerr << name << " copy failed: "
+                << cudaGetErrorString(copy_status) << '\n';
+      return false;
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+      const float expected =
+          transform_reference(input[index], selectors[index] != 0, work);
+      if (!expect_close(output[index], expected, 1e-5f,
+                        std::string(name) + " index " +
+                            std::to_string(index))) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const bool valid =
+      check("branch transform", kernel_lab::select_transform_branch) &&
+      check("branchless transform", kernel_lab::select_transform_branchless);
+  cudaFree(device_input);
+  cudaFree(device_output);
+  cudaFree(device_selectors);
+  return valid;
+}
+
 bool test_wmma() {
   int device = 0;
   CUDA_CHECK(cudaGetDevice(&device));
@@ -209,7 +289,7 @@ bool test_wmma() {
 
 int main() {
   if (!test_invalid_arguments() || !test_reduce_and_transpose() ||
-      !test_wmma()) {
+      !test_divergence_transforms() || !test_wmma()) {
     return 1;
   }
   std::cout << "kernel tests passed\n";

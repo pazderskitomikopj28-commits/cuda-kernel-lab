@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -29,6 +30,7 @@ struct Options {
   int cols = 4096;
   int inner = 0;
   int iterations = 100;
+  int work = 64;
   std::string op = "reduce";
 };
 
@@ -60,6 +62,8 @@ Options parse_options(int argc, char** argv) {
       inner_set = true;
     } else if (arg == "--iters") {
       read_int(options.iterations);
+    } else if (arg == "--work") {
+      read_int(options.work);
     } else if (arg == "--op") {
       if (i + 1 >= argc) throw std::invalid_argument("missing value for --op");
       options.op = argv[++i];
@@ -84,6 +88,59 @@ cudaError_t elapsed_ms(cudaEvent_t start, cudaEvent_t stop, int iterations,
   if (status != cudaSuccess) return status;
   *result = total / static_cast<float>(iterations);
   return cudaSuccess;
+}
+
+using SelectTransform = cudaError_t (*)(
+    const float*, const std::uint8_t*, float*, std::size_t, int,
+    cudaStream_t);
+
+cudaError_t measure_select_transform(
+    SelectTransform launch, const float* input,
+    const std::uint8_t* selectors, float* output, std::size_t count, int work,
+    int iterations, cudaEvent_t start, cudaEvent_t stop, float* result_ms) {
+  cudaError_t status = launch(input, selectors, output, count, work, nullptr);
+  if (status != cudaSuccess) return status;
+  status = cudaDeviceSynchronize();
+  if (status != cudaSuccess) return status;
+  status = cudaEventRecord(start);
+  if (status != cudaSuccess) return status;
+  for (int iteration = 0; iteration < iterations; ++iteration) {
+    status = launch(input, selectors, output, count, work, nullptr);
+    if (status != cudaSuccess) return status;
+  }
+  status = cudaEventRecord(stop);
+  if (status != cudaSuccess) return status;
+  status = cudaEventSynchronize(stop);
+  if (status != cudaSuccess) return status;
+  return elapsed_ms(start, stop, iterations, result_ms);
+}
+
+float transform_reference(float value, bool select_path_a, int work) {
+  const float multiplier =
+      select_path_a ? 1.0009765625f : 0.9990234375f;
+  const float addend =
+      select_path_a ? 0.000244140625f : -0.000244140625f;
+  for (int iteration = 0; iteration < work; ++iteration) {
+    value = std::fma(value, multiplier, addend);
+  }
+  return value;
+}
+
+float validate_transform(const std::vector<float>& input,
+                         const std::vector<std::uint8_t>& selectors,
+                         const std::vector<float>& output, int work,
+                         std::size_t checks) {
+  float max_abs_error = 0.0f;
+  checks = std::min(checks, input.size());
+  for (std::size_t sample = 0; sample < checks; ++sample) {
+    const std::size_t index =
+        checks == 1 ? 0 : sample * (input.size() - 1) / (checks - 1);
+    const float reference =
+        transform_reference(input[index], selectors[index] != 0, work);
+    max_abs_error =
+        std::max(max_abs_error, std::abs(reference - output[index]));
+  }
+  return max_abs_error;
 }
 
 int benchmark_reduce(const Options& options) {
@@ -242,6 +299,100 @@ int benchmark_transpose(const Options& options) {
   return max_abs_error < 1e-6f ? 0 : 2;
 }
 
+int benchmark_divergence(const Options& options) {
+  const std::size_t count =
+      static_cast<std::size_t>(options.rows) * options.cols;
+  std::vector<float> host_input(count);
+  std::vector<float> host_output(count, 0.0f);
+  std::vector<std::uint8_t> grouped_selectors(count);
+  std::vector<std::uint8_t> alternating_selectors(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    host_input[index] =
+        static_cast<float>(static_cast<int>(index % 257) - 128) / 128.0f;
+    grouped_selectors[index] =
+        static_cast<std::uint8_t>((index / 32) & 1u);
+    alternating_selectors[index] = static_cast<std::uint8_t>(index & 1u);
+  }
+
+  float* device_input = nullptr;
+  float* device_output = nullptr;
+  std::uint8_t* device_grouped = nullptr;
+  std::uint8_t* device_alternating = nullptr;
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_input),
+                        count * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_output),
+                        count * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_grouped),
+                        count * sizeof(std::uint8_t)));
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_alternating),
+                        count * sizeof(std::uint8_t)));
+  CUDA_CHECK(cudaMemcpy(device_input, host_input.data(), count * sizeof(float),
+                        cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(device_grouped, grouped_selectors.data(),
+                        count * sizeof(std::uint8_t), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(device_alternating, alternating_selectors.data(),
+                        count * sizeof(std::uint8_t), cudaMemcpyHostToDevice));
+
+  cudaEvent_t start = nullptr;
+  cudaEvent_t stop = nullptr;
+  CUDA_CHECK(cudaEventCreate(&start));
+  CUDA_CHECK(cudaEventCreate(&stop));
+
+  float grouped_ms = 0.0f;
+  CUDA_CHECK(measure_select_transform(
+      kernel_lab::select_transform_branch, device_input, device_grouped,
+      device_output, count, options.work, options.iterations, start, stop,
+      &grouped_ms));
+  CUDA_CHECK(cudaMemcpy(host_output.data(), device_output,
+                        count * sizeof(float), cudaMemcpyDeviceToHost));
+  const std::size_t checked_elements = std::min<std::size_t>(count, 8192);
+  float max_abs_error = validate_transform(
+      host_input, grouped_selectors, host_output, options.work,
+      checked_elements);
+
+  float divergent_ms = 0.0f;
+  CUDA_CHECK(measure_select_transform(
+      kernel_lab::select_transform_branch, device_input, device_alternating,
+      device_output, count, options.work, options.iterations, start, stop,
+      &divergent_ms));
+  CUDA_CHECK(cudaMemcpy(host_output.data(), device_output,
+                        count * sizeof(float), cudaMemcpyDeviceToHost));
+  max_abs_error = std::max(
+      max_abs_error, validate_transform(host_input, alternating_selectors,
+                                        host_output, options.work,
+                                        checked_elements));
+
+  float branchless_ms = 0.0f;
+  CUDA_CHECK(measure_select_transform(
+      kernel_lab::select_transform_branchless, device_input,
+      device_alternating, device_output, count, options.work,
+      options.iterations, start, stop, &branchless_ms));
+  CUDA_CHECK(cudaMemcpy(host_output.data(), device_output,
+                        count * sizeof(float), cudaMemcpyDeviceToHost));
+  max_abs_error = std::max(
+      max_abs_error, validate_transform(host_input, alternating_selectors,
+                                        host_output, options.work,
+                                        checked_elements));
+
+  std::cout << std::fixed << std::setprecision(4)
+            << "op=divergence elements=" << count
+            << " work=" << options.work << " grouped_ms=" << grouped_ms
+            << " divergent_ms=" << divergent_ms
+            << " branchless_ms=" << branchless_ms
+            << " divergence_slowdown=" << divergent_ms / grouped_ms
+            << " branchless_speedup=" << divergent_ms / branchless_ms
+            << " checked_elements=" << checked_elements
+            << " max_abs_error=" << max_abs_error << '\n';
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  cudaFree(device_input);
+  cudaFree(device_output);
+  cudaFree(device_grouped);
+  cudaFree(device_alternating);
+  return max_abs_error < 1e-5f ? 0 : 2;
+}
+
 int benchmark_wmma(const Options& options) {
   const int m = options.rows;
   const int n = options.cols;
@@ -328,9 +479,10 @@ int main(int argc, char** argv) {
     const Options options = parse_options(argc, argv);
     if (options.op == "reduce") return benchmark_reduce(options);
     if (options.op == "transpose") return benchmark_transpose(options);
+    if (options.op == "divergence") return benchmark_divergence(options);
     if (options.op == "wmma") return benchmark_wmma(options);
     std::cerr << "unknown --op: " << options.op
-              << " (use reduce, transpose or wmma)\n";
+              << " (use reduce, transpose, divergence or wmma)\n";
     return 2;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

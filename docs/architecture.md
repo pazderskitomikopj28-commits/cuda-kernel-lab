@@ -13,6 +13,30 @@ The launch chooses a multiple of 32 threads, capped at 256. For a real kernel
 the best choice still depends on the shape and device; record that choice in a
 benchmark rather than assuming 256 is always optimal.
 
+## Branch divergence
+
+The conditional-transform experiment keeps input, selector and output access
+contiguous in all variants. Only selector layout and control flow change:
+
+- `grouped` assigns the same selector to each group of 32 consecutive threads,
+  so every warp takes one path;
+- `divergent` alternates the selector for adjacent threads, forcing each warp
+  to execute both paths with complementary active lanes;
+- `branchless` uses the alternating selector but evaluates both paths for every
+  thread before selecting a result.
+
+Both arithmetic paths contain a runtime-controlled dependent FMA loop and are
+kept out of line. This prevents the compiler from reducing the experiment to a
+single predicated instruction. The Release `sm_89` binary was also inspected
+with `cuobjdump --dump-sass`: the selector in the branch kernel controls a
+conditional `BRA`, while the branchless kernel calls both paths and uses a
+predicate select.
+
+Branchless code is not assumed to be faster. A divergent warp may serialize
+paths, while a branchless implementation deliberately performs extra work for
+every lane. The benchmark reports both timings and treats the result as a
+workload-dependent tradeoff.
+
 ## Tiled transpose
 
 Both tiled kernels load a 32×32 tile into shared memory. The deliberately

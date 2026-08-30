@@ -1,10 +1,11 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('reduce', 'transpose', 'wmma')]
+  [ValidateSet('reduce', 'transpose', 'divergence', 'wmma')]
   [string]$Op = 'reduce',
   [int]$Rows = 4096,
   [int]$Cols = 4096,
   [int]$K = 256,
+  [int]$Work = 64,
   [int]$Iters = 10,
   [string]$BuildDir = 'D:\DevTools\Builds\cuda-kernel-lab-rtx4060',
   [string]$ReportDir = 'reports',
@@ -33,7 +34,7 @@ $ReportDir = [IO.Path]::GetFullPath($ReportDir)
 New-Item -ItemType Directory -Force -Path $ReportDir | Out-Null
 $executable = (Resolve-Path $executable).Path
 $arguments = @('--op', $Op, '--rows', $Rows, '--cols', $Cols,
-               '--k', $K, '--iters', $Iters)
+               '--k', $K, '--work', $Work, '--iters', $Iters)
 $trace = if ($env:OS -eq 'Windows_NT') { 'cuda,nvtx' } else { 'cuda,nvtx,osrt' }
 $platformOptions = @()
 if ($env:OS -eq 'Windows_NT') {

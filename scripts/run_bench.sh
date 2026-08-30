@@ -7,4 +7,6 @@ rows="${ROWS:-4096}"
 cols="${COLS:-4096}"
 iters="${ITERS:-100}"
 k="${K:-256}"
-"${build_dir}/kernel_bench" --op "${op}" --rows "${rows}" --cols "${cols}" --k "${k}" --iters "${iters}"
+work="${WORK:-64}"
+"${build_dir}/kernel_bench" --op "${op}" --rows "${rows}" --cols "${cols}" \
+  --k "${k}" --work "${work}" --iters "${iters}"
