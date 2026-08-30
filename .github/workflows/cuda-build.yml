@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     container: nvidia/cuda:12.4.1-devel-ubuntu22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install build tools
         run: apt-get update && apt-get install -y --no-install-recommends cmake ninja-build g++
       - name: Configure
