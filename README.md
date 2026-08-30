@@ -82,6 +82,9 @@ Systems 用来确认调度、拷贝和 Stream 并发；Compute 用来定位单�
 
 当前可执行矩阵路径是 SM70+ WMMA。WGMMA 依赖 SM90+、warpgroup 和异步提交/等待语义，本仓库不把未在 Hopper 真机验证的 PTX 片段包装成“已实现”；学习与验收清单见 [`docs/wgmma-notes.md`](docs/wgmma-notes.md)。
 
+RTX 4060 Laptop GPU 的重复测量、中位数和 Sanitizer 证据见
+[`docs/results/rtx4060-laptop-2026-08-30.md`](docs/results/rtx4060-laptop-2026-08-30.md)。
+
 ## 迁移到国产 GPU
 
 本项目把算法与接口边界写清楚，便于迁移到 BIRENSUPA/br_pytorch。WMMA 部分仅是 NVIDIA 参考实现；迁移时需要依据壁仞 SDK 的设备执行组织、矩阵指令、编译器和 profiling 工具重新验证。相关说明见后续的 `gpu-perf-playbook` 项目。
