@@ -2,19 +2,18 @@
 
 [![CUDA compile](https://github.com/pazderskitomikopj28-commits/cuda-kernel-lab/actions/workflows/cuda-build.yml/badge.svg)](https://github.com/pazderskitomikopj28-commits/cuda-kernel-lab/actions/workflows/cuda-build.yml)
 
-一套可复现的 CUDA 算子优化练习，围绕“正确性 + 性能 + 可解释的优化过程”组织，适合准备 GPU 编程、算子开发和性能工程面试。
+一套可复现的 CUDA 算子优化实验，围绕“正确性、性能和可解释的优化过程”组织。仓库保留基线实现、优化实现、测试、测量命令和架构笔记，便于重复实验与比较不同 GPU 上的结果。
 
-## 覆盖的能力
+## 实验组成
 
-| 问卷能力 | 对应内容 |
-| --- | --- |
-| Kernel / Grid / Block / Thread | `src/kernels.cu` 中的 reduction 与 transpose 映射 |
-| SIMT / Warp / Divergence | warp shuffle reduction、边界分支分析 |
-| Shared Memory | 有/无 Bank Conflict 的 32×32 tiling、`+1` padding、`__syncthreads()` |
-| Tensor Core / WMMA / WGMMA | 可执行的 `wmma_gemm`；WGMMA 的 warpgroup 异步模型与验证边界见 `docs/wgmma-notes.md` |
-| Global Memory Coalescing | transpose 的连续加载、转置写回 |
-| Nsight 分析 | `scripts/` 与文档中的 Systems/Compute 命令 |
-| 工程能力 | CMake、单元测试、benchmark、可读的设计笔记 |
+| 实验 | 比较对象 | 关注点 |
+| --- | --- | --- |
+| 行归约 | shared-memory baseline vs warp shuffle | 线程映射、SIMT、warp 内归约和同步边界 |
+| 矩阵转置 | naive vs 32×32 tiled vs `+1` padded tile | 合并访问、shared memory、bank conflict 和 `__syncthreads()` |
+| 矩阵乘 | host FP32 reference vs WMMA | Tensor Core、fragment 形状限制和数值正确性 |
+| 性能诊断 | CUDA event、Nsight 与 Compute Sanitizer | 重复测量、瓶颈定位和内存/竞争错误检查 |
+
+WGMMA 与 WMMA 不是可互换接口。Hopper warpgroup 异步矩阵指令的实现条件和验证边界单独记录在 [`docs/wgmma-notes.md`](docs/wgmma-notes.md)，不把未在相应硬件上运行的代码作为实验结果。
 
 ## 构建
 
@@ -56,7 +55,7 @@ Windows 真机使用：
 .\scripts\sanitize.ps1 -BuildDir D:\DevTools\Builds\cuda-kernel-lab-rtx4060
 ```
 
-没有 CUDA 环境时可以阅读源码、检查 CMake 和文档，但不要把没有真实运行的性能数值写进简历。当前仓库不包含任何伪造 benchmark 结果。
+没有 CUDA 环境时仍可阅读源码、检查 CMake 和文档，但不应发布未经真实运行验证的性能数值。
 
 ## 运行 Nsight
 
