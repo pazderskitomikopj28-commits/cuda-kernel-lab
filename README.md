@@ -24,6 +24,7 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 .\scripts\run_bench.ps1 -Op reduce -Rows 4096 -Cols 4096
 .\scripts\run_bench.ps1 -Op transpose -Rows 4097 -Cols 3073
+.\scripts\run_bench.ps1 -Op wmma -Rows 256 -Cols 256
 ```
 
 Linux：

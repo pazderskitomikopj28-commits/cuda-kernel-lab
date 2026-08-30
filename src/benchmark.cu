@@ -190,12 +190,92 @@ int benchmark_transpose(const Options& options) {
   return max_abs_error < 1e-6f ? 0 : 2;
 }
 
+int benchmark_wmma(const Options& options) {
+  const int m = options.rows;
+  const int n = options.cols;
+  const int k = options.cols;
+  if (m % 16 != 0 || n % 16 != 0 || k % 16 != 0) {
+    std::cerr << "wmma requires rows and cols to be multiples of 16\n";
+    return 2;
+  }
+
+  const size_t a_count = static_cast<size_t>(m) * k;
+  const size_t b_count = static_cast<size_t>(k) * n;
+  const size_t c_count = static_cast<size_t>(m) * n;
+  std::vector<half> host_a(a_count);
+  std::vector<half> host_b(b_count);
+  std::vector<float> host_c(c_count, 0.0f);
+  for (size_t i = 0; i < a_count; ++i) {
+    host_a[i] = __float2half(
+        static_cast<float>(static_cast<int>(i % 17) - 8) / 16.0f);
+  }
+  for (size_t i = 0; i < b_count; ++i) {
+    host_b[i] = __float2half(
+        static_cast<float>(static_cast<int>(i % 13) - 6) / 16.0f);
+  }
+
+  half* device_a = nullptr;
+  half* device_b = nullptr;
+  float* device_c = nullptr;
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_a), a_count * sizeof(half)));
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_b), b_count * sizeof(half)));
+  CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_c), c_count * sizeof(float)));
+  CUDA_CHECK(cudaMemcpy(device_a, host_a.data(), a_count * sizeof(half),
+                        cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(device_b, host_b.data(), b_count * sizeof(half),
+                        cudaMemcpyHostToDevice));
+
+  cudaEvent_t start = nullptr;
+  cudaEvent_t stop = nullptr;
+  CUDA_CHECK(cudaEventCreate(&start));
+  CUDA_CHECK(cudaEventCreate(&stop));
+  CUDA_CHECK(kernel_lab::wmma_gemm(device_a, device_b, device_c, m, n, k));
+  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(cudaEventRecord(start));
+  for (int i = 0; i < options.iterations; ++i) {
+    CUDA_CHECK(kernel_lab::wmma_gemm(device_a, device_b, device_c, m, n, k));
+  }
+  CUDA_CHECK(cudaEventRecord(stop));
+  CUDA_CHECK(cudaEventSynchronize(stop));
+  const float ms = elapsed_ms(start, stop, options.iterations);
+  CUDA_CHECK(cudaMemcpy(host_c.data(), device_c, c_count * sizeof(float),
+                        cudaMemcpyDeviceToHost));
+
+  float max_abs_error = 0.0f;
+  for (int row = 0; row < m; ++row) {
+    for (int col = 0; col < n; ++col) {
+      float reference = 0.0f;
+      for (int inner = 0; inner < k; ++inner) {
+        reference += __half2float(host_a[static_cast<size_t>(row) * k + inner]) *
+                     __half2float(host_b[static_cast<size_t>(inner) * n + col]);
+      }
+      max_abs_error = std::max(
+          max_abs_error,
+          std::abs(reference - host_c[static_cast<size_t>(row) * n + col]));
+    }
+  }
+  const double tflops = (2.0 * m * n * k) / (static_cast<double>(ms) * 1e9);
+  std::cout << std::fixed << std::setprecision(4)
+            << "op=wmma_gemm m=" << m << " n=" << n << " k=" << k
+            << " ms=" << ms << " TFLOP/s=" << tflops
+            << " max_abs_error=" << max_abs_error << '\n';
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  cudaFree(device_a);
+  cudaFree(device_b);
+  cudaFree(device_c);
+  return max_abs_error < 5e-2f ? 0 : 2;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   const Options options = parse_options(argc, argv);
   if (options.op == "reduce") return benchmark_reduce(options);
   if (options.op == "transpose") return benchmark_transpose(options);
-  std::cerr << "unknown --op: " << options.op << " (use reduce or transpose)\n";
+  if (options.op == "wmma") return benchmark_wmma(options);
+  std::cerr << "unknown --op: " << options.op
+            << " (use reduce, transpose or wmma)\n";
   return 2;
 }
