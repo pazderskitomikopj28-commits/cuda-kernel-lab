@@ -10,6 +10,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $exe = Join-Path $BuildDir 'kernel_bench.exe'
 if (-not (Test-Path $exe)) {
-  throw "Cannot find $exe. Configure and build with CMake first."
+  $releaseExe = Join-Path $BuildDir 'Release\kernel_bench.exe'
+  if (Test-Path $releaseExe) { $exe = $releaseExe }
+}
+if (-not (Test-Path $exe)) {
+  throw "Cannot find kernel_bench.exe under $BuildDir. Configure and build with CMake first."
 }
 & $exe --op $Op --rows $Rows --cols $Cols --iters $Iters
