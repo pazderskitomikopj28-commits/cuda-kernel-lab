@@ -15,10 +15,12 @@ benchmark rather than assuming 256 is always optimal.
 
 ## Tiled transpose
 
-The tiled kernel loads a 32×32 tile into shared memory and uses a `33`-column
-stride. The extra column changes the bank mapping and avoids the classic
-transpose bank conflict. The load and store are guarded separately so
-non-multiple dimensions remain correct.
+Both tiled kernels load a 32×32 tile into shared memory. The deliberately
+conflicted variant uses a `32`-column stride; when a warp reads a column during
+the transposed store, its addresses map to the same bank. The padded variant
+uses a `33`-column stride, changing that mapping while preserving coalesced
+global-memory access. The benchmark reports both timings, and the load and
+store are guarded separately so non-multiple dimensions remain correct.
 
 ## WMMA
 
@@ -29,7 +31,7 @@ corresponding SUPA matrix/tensor API after checking the target SDK and tile
 constraints. Do not treat this sample as evidence that a different GPU exposes
 the same instruction set.
 
-`kernel_bench --op wmma --rows 256 --cols 256` includes a host-side FP32
+`kernel_bench --op wmma --rows 256 --cols 256 --k 256` includes a host-side FP32
 reference check and reports the measured TFLOP/s. The tolerance is intentionally
 looser than the reduction/transpose checks because the computation uses FP16
 inputs and a FP32 accumulator; record the exact tolerance with any published

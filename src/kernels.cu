@@ -3,6 +3,7 @@
 #include <mma.h>
 
 #include <algorithm>
+#include <cstddef>
 
 namespace {
 
@@ -18,7 +19,7 @@ __global__ void reduce_mean_baseline_kernel(const float* input, float* output,
   }
 
   float sum = 0.0f;
-  const int offset = row * cols;
+  const std::size_t offset = static_cast<std::size_t>(row) * cols;
   for (int col = 0; col < cols; ++col) {
     sum += input[offset + col];
   }
@@ -35,7 +36,7 @@ __global__ void reduce_mean_warp_kernel(const float* input, float* output,
   const int lane = threadIdx.x & (kWarpSize - 1);
   const int warp = threadIdx.x / kWarpSize;
   float partial = 0.0f;
-  const int offset = row * cols;
+  const std::size_t offset = static_cast<std::size_t>(row) * cols;
   for (int col = threadIdx.x; col < cols; col += blockDim.x) {
     partial += input[offset + col];
   }
@@ -66,19 +67,22 @@ __global__ void transpose_naive_kernel(const float* input, float* output,
   const int col = blockIdx.x * blockDim.x + threadIdx.x;
   const int row = blockIdx.y * blockDim.y + threadIdx.y;
   if (row < rows && col < cols) {
-    output[col * rows + row] = input[row * cols + col];
+    output[static_cast<std::size_t>(col) * rows + row] =
+        input[static_cast<std::size_t>(row) * cols + col];
   }
 }
 
+template <int kPadding>
 __global__ void transpose_tiled_kernel(const float* input, float* output,
                                        int rows, int cols) {
-  __shared__ float tile[kTileDim][kTileDim + 1];
+  __shared__ float tile[kTileDim][kTileDim + kPadding];
 
   const int col = blockIdx.x * kTileDim + threadIdx.x;
   const int row = blockIdx.y * kTileDim + threadIdx.y;
   for (int j = 0; j < kTileDim; j += kBlockRows) {
     if (row + j < rows && col < cols) {
-      tile[threadIdx.y + j][threadIdx.x] = input[(row + j) * cols + col];
+      tile[threadIdx.y + j][threadIdx.x] =
+          input[static_cast<std::size_t>(row + j) * cols + col];
     }
   }
   __syncthreads();
@@ -87,7 +91,7 @@ __global__ void transpose_tiled_kernel(const float* input, float* output,
   const int out_row = blockIdx.x * kTileDim + threadIdx.y;
   for (int j = 0; j < kTileDim; j += kBlockRows) {
     if (out_row + j < cols && out_col < rows) {
-      output[(out_row + j) * rows + out_col] =
+      output[static_cast<std::size_t>(out_row + j) * rows + out_col] =
           tile[threadIdx.x][threadIdx.y + j];
     }
   }
@@ -108,11 +112,14 @@ __global__ void wmma_gemm_kernel(const half* a, const half* b, float* c,
   wmma::fill_fragment(c_frag, 0.0f);
 
   for (int tile_k = 0; tile_k < k; tile_k += 16) {
-    wmma::load_matrix_sync(a_frag, a + tile_m * k + tile_k, k);
-    wmma::load_matrix_sync(b_frag, b + tile_k * n + tile_n, n);
+    wmma::load_matrix_sync(
+        a_frag, a + static_cast<std::size_t>(tile_m) * k + tile_k, k);
+    wmma::load_matrix_sync(
+        b_frag, b + static_cast<std::size_t>(tile_k) * n + tile_n, n);
     wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
   }
-  wmma::store_matrix_sync(c + tile_m * n + tile_n, c_frag, n,
+  wmma::store_matrix_sync(
+      c + static_cast<std::size_t>(tile_m) * n + tile_n, c_frag, n,
                            wmma::mem_row_major);
 }
 
@@ -163,7 +170,23 @@ cudaError_t transpose_tiled(const float* input, float* output, int rows,
   dim3 block(kTileDim, kBlockRows);
   dim3 grid((cols + kTileDim - 1) / kTileDim,
             (rows + kTileDim - 1) / kTileDim);
-  transpose_tiled_kernel<<<grid, block, 0, stream>>>(input, output, rows, cols);
+  transpose_tiled_kernel<1><<<grid, block, 0, stream>>>(input, output, rows,
+                                                        cols);
+  return cudaGetLastError();
+}
+
+cudaError_t transpose_tiled_conflict(const float* input, float* output,
+                                     int rows, int cols,
+                                     cudaStream_t stream) {
+  if (input == nullptr || output == nullptr ||
+      check_shape(rows, cols) != cudaSuccess) {
+    return cudaErrorInvalidValue;
+  }
+  dim3 block(kTileDim, kBlockRows);
+  dim3 grid((cols + kTileDim - 1) / kTileDim,
+            (rows + kTileDim - 1) / kTileDim);
+  transpose_tiled_kernel<0><<<grid, block, 0, stream>>>(input, output, rows,
+                                                        cols);
   return cudaGetLastError();
 }
 

@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -26,31 +27,63 @@ namespace {
 struct Options {
   int rows = 4096;
   int cols = 4096;
+  int inner = 0;
   int iterations = 100;
   std::string op = "reduce";
 };
 
 Options parse_options(int argc, char** argv) {
   Options options;
+  bool rows_set = false;
+  bool cols_set = false;
+  bool inner_set = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg(argv[i]);
     auto read_int = [&](int& target) {
-      if (i + 1 < argc) {
-        target = std::max(1, std::stoi(argv[++i]));
+      if (i + 1 >= argc) throw std::invalid_argument("missing value for " + arg);
+      const std::string value(argv[++i]);
+      std::size_t consumed = 0;
+      const int parsed = std::stoi(value, &consumed);
+      if (consumed != value.size() || parsed <= 0) {
+        throw std::invalid_argument(arg + " requires a positive integer");
       }
+      target = parsed;
     };
-    if (arg == "--rows") read_int(options.rows);
-    else if (arg == "--cols") read_int(options.cols);
-    else if (arg == "--iters") read_int(options.iterations);
-    else if (arg == "--op" && i + 1 < argc) options.op = argv[++i];
+    if (arg == "--rows") {
+      read_int(options.rows);
+      rows_set = true;
+    } else if (arg == "--cols") {
+      read_int(options.cols);
+      cols_set = true;
+    } else if (arg == "--k") {
+      read_int(options.inner);
+      inner_set = true;
+    } else if (arg == "--iters") {
+      read_int(options.iterations);
+    } else if (arg == "--op") {
+      if (i + 1 >= argc) throw std::invalid_argument("missing value for --op");
+      options.op = argv[++i];
+    } else {
+      throw std::invalid_argument("unknown argument: " + arg);
+    }
+  }
+  if (options.op == "wmma") {
+    if (!rows_set) options.rows = 256;
+    if (!cols_set) options.cols = 256;
+    if (!inner_set) options.inner = 256;
+  } else if (!inner_set) {
+    options.inner = options.cols;
   }
   return options;
 }
 
-float elapsed_ms(cudaEvent_t start, cudaEvent_t stop, int iterations) {
+cudaError_t elapsed_ms(cudaEvent_t start, cudaEvent_t stop, int iterations,
+                       float* result) {
   float total = 0.0f;
-  CUDA_CHECK(cudaEventElapsedTime(&total, start, stop));
-  return total / static_cast<float>(iterations);
+  const cudaError_t status = cudaEventElapsedTime(&total, start, stop);
+  if (status != cudaSuccess) return status;
+  *result = total / static_cast<float>(iterations);
+  return cudaSuccess;
 }
 
 int benchmark_reduce(const Options& options) {
@@ -85,7 +118,8 @@ int benchmark_reduce(const Options& options) {
   }
   CUDA_CHECK(cudaEventRecord(stop));
   CUDA_CHECK(cudaEventSynchronize(stop));
-  const float baseline_ms = elapsed_ms(start, stop, options.iterations);
+  float baseline_ms = 0.0f;
+  CUDA_CHECK(elapsed_ms(start, stop, options.iterations, &baseline_ms));
 
   CUDA_CHECK(kernel_lab::reduce_mean_warp(device_input, device_output,
                                           options.rows, options.cols));
@@ -97,7 +131,8 @@ int benchmark_reduce(const Options& options) {
   }
   CUDA_CHECK(cudaEventRecord(stop));
   CUDA_CHECK(cudaEventSynchronize(stop));
-  const float optimized_ms = elapsed_ms(start, stop, options.iterations);
+  float optimized_ms = 0.0f;
+  CUDA_CHECK(elapsed_ms(start, stop, options.iterations, &optimized_ms));
 
   CUDA_CHECK(cudaMemcpy(host_output.data(), device_output,
                         options.rows * sizeof(float), cudaMemcpyDeviceToHost));
@@ -153,7 +188,21 @@ int benchmark_transpose(const Options& options) {
   }
   CUDA_CHECK(cudaEventRecord(stop));
   CUDA_CHECK(cudaEventSynchronize(stop));
-  const float naive_ms = elapsed_ms(start, stop, options.iterations);
+  float naive_ms = 0.0f;
+  CUDA_CHECK(elapsed_ms(start, stop, options.iterations, &naive_ms));
+
+  CUDA_CHECK(kernel_lab::transpose_tiled_conflict(
+      device_input, device_output, options.rows, options.cols));
+  CUDA_CHECK(cudaDeviceSynchronize());
+  CUDA_CHECK(cudaEventRecord(start));
+  for (int i = 0; i < options.iterations; ++i) {
+    CUDA_CHECK(kernel_lab::transpose_tiled_conflict(
+        device_input, device_output, options.rows, options.cols));
+  }
+  CUDA_CHECK(cudaEventRecord(stop));
+  CUDA_CHECK(cudaEventSynchronize(stop));
+  float conflict_ms = 0.0f;
+  CUDA_CHECK(elapsed_ms(start, stop, options.iterations, &conflict_ms));
 
   CUDA_CHECK(kernel_lab::transpose_tiled(device_input, device_output,
                                          options.rows, options.cols));
@@ -165,7 +214,8 @@ int benchmark_transpose(const Options& options) {
   }
   CUDA_CHECK(cudaEventRecord(stop));
   CUDA_CHECK(cudaEventSynchronize(stop));
-  const float tiled_ms = elapsed_ms(start, stop, options.iterations);
+  float tiled_ms = 0.0f;
+  CUDA_CHECK(elapsed_ms(start, stop, options.iterations, &tiled_ms));
 
   CUDA_CHECK(cudaMemcpy(host_output.data(), device_output, count * sizeof(float),
                         cudaMemcpyDeviceToHost));
@@ -180,8 +230,10 @@ int benchmark_transpose(const Options& options) {
 
   std::cout << std::fixed << std::setprecision(4)
             << "op=transpose rows=" << options.rows << " cols=" << options.cols
-            << " naive_ms=" << naive_ms << " tiled_ms=" << tiled_ms
-            << " speedup=" << naive_ms / tiled_ms
+            << " naive_ms=" << naive_ms << " conflict_ms=" << conflict_ms
+            << " padded_ms=" << tiled_ms
+            << " padded_vs_conflict_speedup=" << conflict_ms / tiled_ms
+            << " padded_vs_naive_speedup=" << naive_ms / tiled_ms
             << " max_abs_error=" << max_abs_error << '\n';
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
@@ -193,9 +245,9 @@ int benchmark_transpose(const Options& options) {
 int benchmark_wmma(const Options& options) {
   const int m = options.rows;
   const int n = options.cols;
-  const int k = options.cols;
+  const int k = options.inner;
   if (m % 16 != 0 || n % 16 != 0 || k % 16 != 0) {
-    std::cerr << "wmma requires rows and cols to be multiples of 16\n";
+    std::cerr << "wmma requires rows, cols and k to be multiples of 16\n";
     return 2;
   }
 
@@ -237,7 +289,8 @@ int benchmark_wmma(const Options& options) {
   }
   CUDA_CHECK(cudaEventRecord(stop));
   CUDA_CHECK(cudaEventSynchronize(stop));
-  const float ms = elapsed_ms(start, stop, options.iterations);
+  float ms = 0.0f;
+  CUDA_CHECK(elapsed_ms(start, stop, options.iterations, &ms));
   CUDA_CHECK(cudaMemcpy(host_c.data(), device_c, c_count * sizeof(float),
                         cudaMemcpyDeviceToHost));
 
@@ -271,11 +324,16 @@ int benchmark_wmma(const Options& options) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  const Options options = parse_options(argc, argv);
-  if (options.op == "reduce") return benchmark_reduce(options);
-  if (options.op == "transpose") return benchmark_transpose(options);
-  if (options.op == "wmma") return benchmark_wmma(options);
-  std::cerr << "unknown --op: " << options.op
-            << " (use reduce, transpose or wmma)\n";
-  return 2;
+  try {
+    const Options options = parse_options(argc, argv);
+    if (options.op == "reduce") return benchmark_reduce(options);
+    if (options.op == "transpose") return benchmark_transpose(options);
+    if (options.op == "wmma") return benchmark_wmma(options);
+    std::cerr << "unknown --op: " << options.op
+              << " (use reduce, transpose or wmma)\n";
+    return 2;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return 2;
+  }
 }

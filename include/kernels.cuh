@@ -20,6 +20,11 @@ cudaError_t transpose_naive(const float* input, float* output,
                             int rows, int cols,
                             cudaStream_t stream = nullptr);
 
+// Deliberately omits shared-memory padding to expose bank-conflict cost.
+cudaError_t transpose_tiled_conflict(const float* input, float* output,
+                                     int rows, int cols,
+                                     cudaStream_t stream = nullptr);
+
 cudaError_t transpose_tiled(const float* input, float* output,
                             int rows, int cols,
                             cudaStream_t stream = nullptr);
