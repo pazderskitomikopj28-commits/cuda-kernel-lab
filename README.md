@@ -86,6 +86,8 @@ Systems 用来确认调度、拷贝和 Stream 并发；Compute 用来定位单�
 
 RTX 4060 Laptop GPU 的重复测量、中位数和 Sanitizer 证据见
 [`docs/results/rtx4060-laptop-2026-08-30.md`](docs/results/rtx4060-laptop-2026-08-30.md)。
+受控分支实验的 SASS 检查和重复测量见
+[`docs/results/rtx4060-divergence-2026-08-30.md`](docs/results/rtx4060-divergence-2026-08-30.md)。
 
 ## 迁移到国产 GPU
 
