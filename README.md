@@ -63,6 +63,18 @@ Windows 真机使用：
 
 没有 CUDA 环境时仍可阅读源码、检查 CMake 和文档，但不应发布未经真实运行验证的性能数值。
 
+## VSCode 开发
+
+仓库包含 `.vscode/launch.json` 和 `tasks.json`。在 Windows 上打开仓库后，进入
+Run and Debug 即可选择 `Debug divergence benchmark` 或 `Debug kernel unit tests`；
+首次按 F5 会调用 `scripts/build_windows.ps1`，使用 D 盘工具链在
+`D:\DevTools\Builds\cuda-kernel-lab-vscode-debug` 构建 Debug 目标并运行 CTest。
+构建脚本保留了中文路径联接和临时目录处理，避免 `nvcc` 路径编码问题。
+
+`.devcontainer/devcontainer.json` 提供 CUDA 12.4 GPU 容器配置，容器中预置
+Nsight VSCode Edition、C/C++ 和 CMake Tools。使用它需要 Docker Desktop 的 WSL2
+GPU 后端；容器配置不会把 Windows 本地 Debug 结果伪装成 Linux 结果。
+
 ## 运行 Nsight
 
 ```bash

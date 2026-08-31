@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug divergence benchmark",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "D:/DevTools/Builds/cuda-kernel-lab-vscode-debug/Debug/kernel_bench.exe",
+      "args": ["--op", "divergence", "--rows", "1024", "--cols", "4096", "--work", "64"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build Debug (CUDA Kernel Lab)",
+      "stopAtEntry": false,
+      "externalConsole": false,
+      "environment": [
+        { "name": "CUDA_PATH", "value": "D:/DevTools/NVIDIA/CUDA/v12.4" }
+      ]
+    },
+    {
+      "name": "Debug kernel unit tests",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "D:/DevTools/Builds/cuda-kernel-lab-vscode-debug/Debug/kernel_tests.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build Debug (CUDA Kernel Lab)",
+      "stopAtEntry": false,
+      "externalConsole": false,
+      "environment": [
+        { "name": "CUDA_PATH", "value": "D:/DevTools/NVIDIA/CUDA/v12.4" }
+      ]
+    }
+  ]
+}
