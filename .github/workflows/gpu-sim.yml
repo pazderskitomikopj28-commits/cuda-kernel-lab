@@ -1,0 +1,70 @@
+name: GPU Simulator
+
+# Optional, non-required check. The hosted runners have no GPU, so this runs
+# the kernel_tests ctest on a simulated NVIDIA H100
+# (https://github.com/pantheongpu/pantheonsim). A simulator has no timing
+# model and cannot reproduce hardware-specific behavior, so it complements
+# real-GPU testing and does not replace it.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "include/**"
+      - "src/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests (CUDA 13.0 and simulated H100)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@a1b9d4237411f9b2b0e0bb895b4d83377f336a7b # v0.1.9
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+
+      # 90-virtual embeds PTX only, which the simulator runs. The simulator
+      # needs a shared CUDA runtime.
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=90-virtual \
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared
+
+      - name: Build
+        run: vgpu run --preload cmake --build build -j3 --target kernel_tests
+
+      # The binary prints "kernel tests passed" only after every check ran.
+      # It also prints "WMMA test skipped" when the device reports compute
+      # capability below 7, which would hide the WMMA check, so that counts
+      # as a failure here.
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          vgpu run ctest --test-dir build --output-on-failure --no-tests=error | tee ctest.log
+          grep -q "100% tests passed, 0 tests failed out of 1" ctest.log
+          vgpu run build/kernel_tests | tee kernel_tests.log
+          grep -q "kernel tests passed" kernel_tests.log
+          if grep -qi "skipped" kernel_tests.log; then
+            echo "::error::a check was skipped"
+            exit 1
+          fi
